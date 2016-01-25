@@ -3,6 +3,7 @@ from functools import reduce
 import sys, getopt
 from os import walk
 import os.path as path
+import os
 
 """
 tags extraction
@@ -11,10 +12,13 @@ tags extraction
 - tags with confidence
 """
 
+
 class ImageModel:
-    def __init__(self, image_id, tags_list):
+
+    def __init__(self, image_id, tags_list, average_confidance):
         self.id = image_id
         self.tagsList = tags_list
+        self.confidance = average_confidance
 
     def set_image_data(self, image_id, tags_list):
         self.id = image_id
@@ -22,6 +26,7 @@ class ImageModel:
 
 
 class ImageProcessor:
+
     @staticmethod
     def process(image_json_path, min_confidence=0):
         """
@@ -38,9 +43,8 @@ class ImageProcessor:
             sum_conf = lambda tag1, tag2: tag1 + tag2['confidence']
             average_confidence = reduce(sum_conf, tags_list, 0) / len(tags_list)
 
-            tags_to_use = list(filter(lambda x: x['confidence'] > average_confidence, tags_list))
-
-            return tags_to_use
+            # currently no change in tags list
+            return (tags_list, average_confidence)
 
         with open(image_json_path) as image_file:
             # returns array of 1 element
@@ -50,15 +54,16 @@ class ImageProcessor:
         image_id = image_data['image']
         image_tags = image_data['tags']
 
-        useful_tags = process_tags(image_tags)
+        useful_tags, average_confidance = process_tags(image_tags)
 
-        return ImageModel(image_id, useful_tags)
+        return ImageModel(image_id, useful_tags, average_confidance)
 
 
 class ClipModel:
-    def __init__(self, clip_id, tags_map):
+    def __init__(self, clip_id, tags_map, average_confidance):
         self.id = clip_id
         self.tagsCountMap = tags_map
+        self.confidance = average_confidance
 
     def get_as_dict(self):
             return self.__dict__
@@ -67,6 +72,7 @@ class ClipModel:
 class ClipProcessor:
     def __init__(self):
         self.image_processor = ImageProcessor()
+
 
     def process(self, clip_folder):
         def process_tags(image_tags, image_map):
@@ -82,12 +88,14 @@ class ClipProcessor:
         # TODO add some checks
         clip_tags_map = []
         for (dir, dirs, files) in walk(clip_folder):
+            average_confidance = 0
             for file_name in files:
                 image_model = self.image_processor.process(path.join(dir, file_name))
                 # add tags to the bag of words
                 process_tags(image_model.tagsList, clip_tags_map)
+                average_confidance += image_model.confidance
         clip_id = path.basename(clip_folder)
-        return ClipModel(clip_id, clip_tags_map)
+        return ClipModel(clip_id, clip_tags_map, average_confidance)
 
 
 class CategoryModel:
@@ -114,7 +122,7 @@ class CategoryProcessor:
     def __init__(self):
         self.clip_processor = ClipProcessor()
 
-    def process(self, category_folder):
+    def process(self, category_folder, min_confidence=0.5):
         category_clips = []
         for (dir, dirs, files) in walk(category_folder):
             processed = 1
@@ -122,7 +130,10 @@ class CategoryProcessor:
                 print('Processing clip file: ', clip_folder)
                 print(processed, '/', len(dirs))
                 clip_model = self.clip_processor.process(path.join(dir, clip_folder))
-                category_clips.append(clip_model)
+                # Filter tags by some constant
+                if clip_model.confidance < min_confidence:
+                    print('Confidance not enough, skipping ...')
+                    category_clips.append(clip_model)
                 processed += 1
         return CategoryModel(category_clips, path.basename(category_folder))
 
@@ -143,31 +154,46 @@ class FolderModel:
 
 
 class FolderProcessor:
+
     """
     Processes folder containing categories
     """
-    def __init__(self):
+    def __init__(self, folder):
         self.category_processor = CategoryProcessor()
+        walked_folder = walk(folder)
+# (dir, dirs, files)
+        self.dir = folder
+        self.dirs = next(walked_folder)[1]
+        self.dirs_count = len(self.dirs)
 
-    def process(self, folder):
+    def remaining_count(self):
+        return len(self.dirs)
+
+    def process(self):
         categories = []
-        for (dir, dirs, files) in walk(folder):
-            processed = 1
-            for category_folder in dirs:
-                print(processed, '/', len(dirs), category_folder)
-                clip_model = self.category_processor.process(path.join(dir, category_folder))
-                categories.append(clip_model)
+        processed = 1
+        for category_folder in self.dirs:
+            print(processed, '/', len(self.dirs), category_folder)
+            clip_model = self.category_processor.process(path.join(dir, category_folder))
+            categories.append(clip_model)
         return FolderModel(categories)
+
+    def process_one(self):
+        category_folder = self.dirs.pop(0)
+        processing = self.dirs_count - len(self.dirs)
+        print(processing, '/', self.dirs_count, category_folder)
+        category_model = self.category_processor.process(path.join(self.dir, category_folder))
+        return category_model
 
 
 def main(argv):
     print(argv)
     try:
         opts, args = getopt.getopt(argv,
-                                   "C:c:i:d:D:",
+                                   "C:c:i:d:f:",
                                    ["category", "clip", "image"])
     except getopt.GetoptError:
-        print('test.py -C path/to/categoryFiles; -c path/to/clipFolders')
+        print('test.py -C path/to/categoryFiles -d path/for/save/; -c path/to/clipFolders')
         sys.exit(2)
 
     print('Processing folder ...', opts, args)
@@ -177,10 +203,9 @@ def main(argv):
     destination_folder = ''
     for opt, arg in opts:
         print(opt, arg)
-        if opt == '-D':
-            # returns list of categories
+        if opt == '-f':
             process_folder = arg
-            processor = FolderProcessor()
+            processor = FolderProcessor(process_folder)
         elif opt == '-C':
             process_folder = arg
             processor = CategoryProcessor()
@@ -192,18 +217,34 @@ def main(argv):
             processor = ImageProcessor()
         elif opt == '-d':
             destination_folder = arg
+            # create path if not exists
+            if not os.path.exists(os.path.dirname(destination_folder)):
+                try:
+                    print('try try')
+                    os.makedirs(os.path.dirname(destination_folder))
+                except OSError as exc: # Guard against race condition
+                    if exc.errno != errno.EEXIST:
+                        raise
+# TODO fix for all -- added process_one
 
-    # save data to file
-    data_for_save = processor.process(process_folder)
-    data_for_save = data_for_save.get_as_dict()
-    if not isinstance(data_for_save, list):
-        data_for_save = [data_for_save]
-    for item in data_for_save:
-        destination_path = path.join(destination_folder, item['id'] + '.json')
-        print('Save to : ', destination_path)
-        with open(destination_path, 'w+') as fp:
-            json.dump(item, fp)
+    def save_parsed_data_to_file(data):
+        data = data.get_as_dict()
+        # save data to file
+        if not isinstance(data, list):
+            data = [data]
+        for item in data:
+            destination_path = path.join(destination_folder, item['id'] + '.json')
+            print('Save to : ', destination_path)
+            with open(destination_path, 'w+') as fp:
+                json.dump(item, fp)
 
+    if callable(getattr(processor, 'process_one', None)):
+        while processor.remaining_count() > 0:
+            data_for_save = processor.process_one()
+            save_parsed_data_to_file(data_for_save)
+    else:
+        save_parsed_data_to_file(data_for_save)
+        
 if __name__ == "__main__":
     main(sys.argv[1:])
 
