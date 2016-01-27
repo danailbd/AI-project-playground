@@ -53,7 +53,7 @@ class ImageProcessor:
         image_data = parsed_image['results'][0]
         image_id = image_data['image']
         image_tags = image_data['tags']
-
+        
         useful_tags, average_confidance = process_tags(image_tags)
 
         return ImageModel(image_id, useful_tags, average_confidance)
@@ -74,28 +74,32 @@ class ClipProcessor:
         self.image_processor = ImageProcessor()
 
 
-    def process(self, clip_folder):
+    def process(self, clip_folder, min_confidence=15):
         def process_tags(image_tags, image_map):
             for tag_data in image_tags:
+                confidence = tag_data['confidence']
                 tag = tag_data['tag']
-                image_map.append(tag)
-                return
-                if image_map.get(tag):
-                    image_map[tag] += 1
-                else:
-                    image_map[tag] = 1
+                if confidence > min_confidence:
+                    image_map.append(tag)
 
         # TODO add some checks
-        clip_tags_map = []
+        clip_tags_list = []
+        images_count = 0
+        total_tags_count = 0
         for (dir, dirs, files) in walk(clip_folder):
             average_confidance = 0
+            images_count = len(files)
             for file_name in files:
-                image_model = self.image_processor.process(path.join(dir, file_name))
+                image_model = self.image_processor.process(path.join(dir, file_name), 0.3)
                 # add tags to the bag of words
-                process_tags(image_model.tagsList, clip_tags_map)
-                average_confidance += image_model.confidance
+                process_tags(image_model.tagsList, clip_tags_list)
+
+                total_tags_count += len(image_model.tagsList)
+                average_confidance += image_model.confidance / images_count
         clip_id = path.basename(clip_folder)
-        return ClipModel(clip_id, clip_tags_map, average_confidance)
+
+        print('Tags count - ', clip_id, ' : ', len(clip_tags_list), '|', total_tags_count)
+        return ClipModel(clip_id, clip_tags_list, average_confidance)
 
 
 class CategoryModel:
@@ -122,19 +126,25 @@ class CategoryProcessor:
     def __init__(self):
         self.clip_processor = ClipProcessor()
 
-    def process(self, category_folder, min_confidence=0.5):
+    def process(self, category_folder, min_confidence=0.5, logging=False):
         category_clips = []
+        clips_count = 0
+        average_confidance = 0
         for (dir, dirs, files) in walk(category_folder):
             processed = 1
+            clip_count = len(dirs)
             for clip_folder in dirs:
-                print('Processing clip file: ', clip_folder)
-                print(processed, '/', len(dirs))
+                if logging:
+                    print('Processing clip file: ', clip_folder)
+                    print(processed, '/', len(dirs))
                 clip_model = self.clip_processor.process(path.join(dir, clip_folder))
                 # Filter tags by some constant
-                if clip_model.confidance < min_confidence:
-                    print('Confidance not enough, skipping ...')
+                if clip_model.confidance > min_confidence:
                     category_clips.append(clip_model)
+                average_confidance += clip_model.confidance / clip_count
                 processed += 1
+        print(path.basename(category_folder), ': ',  average_confidance)
+        print('Clips count', len(category_clips), '|', clips_count)
         return CategoryModel(category_clips, path.basename(category_folder))
 
 # TODO process path - folder/cat/clip
