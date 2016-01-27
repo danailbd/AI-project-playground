@@ -33,7 +33,6 @@ import matplotlib.pyplot as plt
 from os import path, walk
 import json
 
-from sklearn.datasets import fetch_20newsgroups
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.feature_extraction.text import HashingVectorizer
 from sklearn.feature_selection import SelectKBest, chi2
@@ -47,6 +46,15 @@ from sklearn.naive_bayes import BernoulliNB, MultinomialNB
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neighbors import NearestCentroid
 from sklearn.ensemble import RandomForestClassifier
+
+from sklearn import cross_validation
+from sklearn.cross_validation import KFold
+from sklearn.cross_validation import StratifiedKFold
+from sklearn.grid_search import GridSearchCV
+
+from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import GaussianNB
+from sklearn.ensemble import VotingClassifier
 from sklearn.utils.extmath import density
 from sklearn import metrics
 
@@ -111,10 +119,10 @@ data_test  = None
 
 print('Loading categories and data ...')
 # Take data for all categories
-for (dir, dirs, files) in walk('processed_data'):
+for (dir, dirs, files) in walk('/home/danailbd/workspace/uni/AI/project/processed_data_with_confidance'):
     train_data_buffer = []
     test_data_buffer = []
-    y_train      = []
+    y_train_raw      = []
     y_test       = []
 
     for category_data in files:
@@ -126,18 +134,15 @@ for (dir, dirs, files) in walk('processed_data'):
         clips = test_data['clips_data']
         clips_tags_docs = [' '.join(clip_data['tagsCountMap']) for clip_data in clips]
 
+        print('Category: ', category_data, ' - Samples: ', len(clips))
         categories.append(test_data['id'])
+        train_data_buffer.extend(clips_tags_docs)
+        y_train_raw.extend([len(categories)-1] * len(clips_tags_docs))
 
-        test_samples_count = len(clips_tags_docs) // SPLIT_INDEX
-        train_samples_count = len(clips_tags_docs) - test_samples_count
 
-        train_data_buffer.extend(clips_tags_docs[:train_samples_count])
-        test_data_buffer.extend(clips_tags_docs[train_samples_count:])
-
-        y_train.extend([len(categories)-1] * train_samples_count)
-        y_test.extend([len(categories)-1] * test_samples_count)
-    data_train = DataSetHolder(train_data_buffer, y_train)
-    data_test = DataSetHolder(test_data_buffer, y_test)
+    train_data_raw, test_data_raw, y_train, y_test = cross_validation.train_test_split(train_data_buffer, y_train_raw, test_size=0.25, random_state=15)
+    data_train = DataSetHolder(train_data_raw, y_train)
+    data_test = DataSetHolder(test_data_raw, y_test)
 
 
 print('data loaded')
@@ -266,7 +271,7 @@ for clf, name in (
         (RidgeClassifier(tol=1e-2, solver="lsqr"), "Ridge Classifier"),
         (Perceptron(n_iter=50), "Perceptron"),
         (PassiveAggressiveClassifier(n_iter=50), "Passive-Aggressive"),
-        (KNeighborsClassifier(n_neighbors=10), "kNN"),
+        (KNeighborsClassifier(n_neighbors=10, algorithm='brute'), "kNN"),
         (RandomForestClassifier(n_estimators=100), "Random forest")):
     print('=' * 80)
     print(name)
@@ -274,10 +279,10 @@ for clf, name in (
 
 for penalty in ["l2", "l1"]:
     print('=' * 80)
-    print("%s penalty" % penalty.upper())
+        
     # Train Liblinear model
     results.append(benchmark(LinearSVC(loss='l2', penalty=penalty,
-                                            dual=False, tol=1e-3)))
+                                        dual=False, tol=1e-30)))
 
     # Train SGD model
     results.append(benchmark(SGDClassifier(alpha=.0001, n_iter=50,
@@ -309,6 +314,33 @@ results.append(benchmark(Pipeline([
   ('classification', LinearSVC())
 ])))
 
+print('=' * 80)
+print("Voting classifier")
+clf1 = Pipeline([
+  ('feature_selection', LinearSVC(penalty="l1", dual=False, tol=1e-3)),
+  ('classification', LinearSVC())
+])
+clf2 = RandomForestClassifier(random_state=1)
+clf3 = RidgeClassifier(tol=1e-5, solver="lsqr")
+clf4 = MultinomialNB()
+vclf = VotingClassifier(
+    estimators=[('lr', clf1),
+                ('rf', clf2),
+                ('gnb', clf3),
+                ('mnb', clf4)], voting='hard')
+
+tfClfPipe = Pipeline([
+    ('vectorize', TfidfVectorizer()),
+    ('classification', vclf)])
+results.append(benchmark(vclf))
+
+
+#cros1 = cross_validation.cross_val_score(tfClfPipe, train_data_buffer, y_train_raw, scoring='accuracy', cv=5, n_jobs=-1)
+#cros2 = cross_validation.cross_val_predict(tfClfPipe, train_data_buffer, y_train_raw, cv=10, n_jobs=-1)
+
+print('-' * 5, ' Cross validation ')
+#print(cros1)
+#print(cros2)
 # make some plots
 
 indices = np.arange(len(results))
